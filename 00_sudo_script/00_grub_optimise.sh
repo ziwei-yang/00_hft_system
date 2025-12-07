@@ -1,6 +1,12 @@
 #!/bin/bash
 set -euo pipefail
 
+# Check sudo without password
+if ! sudo -n true 2>/dev/null; then
+    echo "Error: sudo requires password. Configure NOPASSWD or run 'sudo -v' first" >&2
+    exit 1
+fi
+
 GRUB_FILE="${1:-/etc/default/grub}"
 
 # Colors
@@ -242,8 +248,8 @@ if [[ "$MODIFIED" == true ]]; then
     echo "Backup: $BACKUP_FILE"
     echo ""
 
-    # Write the new file
-    sudo cp "$TEMP_FILE" "$GRUB_FILE"
+    # Write the new file (use cat to preserve original permissions)
+    cat "$TEMP_FILE" | sudo tee "$GRUB_FILE" > /dev/null
 
     echo -e "${BLUE}=== GRUB Configuration Updated ===${NC}"
     echo ""

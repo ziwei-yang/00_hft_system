@@ -1,0 +1,48 @@
+# HFT Shared Memory Test Configuration
+# All test segments have "test." prefix
+#
+# Note: Set hugepage_size = "0" or "none" to disable hugepages for testing
+# In production, use "2MB" or "1GB" (requires hugepages configured in kernel)
+
+[test.mktdata.binance.raw.rx]
+name = "test/mktdata/binance/raw/rx"
+pair = "BTC/USDT"
+type = "ringbuffer"
+capacity = "32MB"
+element_size = 1
+codec = "string/json"
+hugepage_size = "0"
+writer = ["test.mktdata_receiver.binance"]
+reader = ["test.mktdata_decoder.binance"]
+
+[test.mktdata.binance.raw.tx]
+name = "test/mktdata/binance/raw/tx"
+pair = "BTC/USDT"
+type = "ringbuffer"
+capacity = "2MB"
+element_size = 1
+codec = "string/json"
+hugepage_size = "0"
+writer = ["test.mktdata_decoder.binance"]
+reader = ["test.mktdata_receiver.binance"]
+
+[test.orderbook.binance.btcusdt]
+name = "test/orderbook/binance/btcusdt"
+pair = "BTC/USDT"
+type = "snapshot"
+capacity = "1MB"
+element_size = 64
+codec = "binary"
+hugepage_size = "0"
+writer = ["test.orderbook_builder.binance"]
+reader = ["test.strategy.alpha", "test.strategy.beta"]
+
+[test.signals.alpha]
+name = "test/signals/alpha"
+type = "ringbuffer"
+capacity = "512KB"
+element_size = 128
+codec = "binary"
+hugepage_size = "0"
+writer = ["test.strategy.alpha"]
+reader = ["test.execution.alpha"]
