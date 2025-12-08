@@ -6,6 +6,7 @@ void run_types_tests();
 void run_config_tests();
 void run_platform_tests();
 void run_integration_tests();
+void run_layout_tests();
 
 int main() {
     std::cout << "=================================\n";
@@ -14,6 +15,7 @@ int main() {
 
     try {
         run_types_tests();
+        run_layout_tests();
         run_config_tests();
         run_platform_tests();
         run_integration_tests();

@@ -42,6 +42,16 @@ struct LinuxShmPolicy {
         return std::string(BASE_PATH) + "/" + std::string(name);
     }
 
+    // Get header segment path (for ringbuffer type)
+    auto get_header_path(std::string_view name) const -> std::string {
+        return get_path(name) + ".hdr";
+    }
+
+    // Get data segment path (for ringbuffer type)
+    auto get_data_path(std::string_view name) const -> std::string {
+        return get_path(name) + ".dat";
+    }
+
     // Create shared memory segment
     // Returns file descriptor or -1 on error
     auto create(std::string_view name, std::size_t size, [[maybe_unused]] std::size_t hugepage_size) const -> int {
@@ -217,6 +227,16 @@ struct MacOSShmPolicy {
     // Get full path for a segment name
     auto get_path(std::string_view name) const -> std::string {
         return std::string(BASE_PATH) + "/" + std::string(name);
+    }
+
+    // Get header segment path (for ringbuffer type)
+    auto get_header_path(std::string_view name) const -> std::string {
+        return get_path(name) + ".hdr";
+    }
+
+    // Get data segment path (for ringbuffer type)
+    auto get_data_path(std::string_view name) const -> std::string {
+        return get_path(name) + ".dat";
     }
 
     // Create shared memory segment

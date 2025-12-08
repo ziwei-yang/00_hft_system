@@ -123,6 +123,12 @@ public:
                             config.hugepage_size = HUGEPAGE_AUTO;
                         }
 
+                        if (auto max_cons = section["max_consumers"].value<int64_t>()) {
+                            config.max_consumers = static_cast<std::size_t>(*max_cons);
+                        } else {
+                            config.max_consumers = 8;  // Default: 8 consumers
+                        }
+
                         if (auto writer_arr = section["writer"].as_array()) {
                             for (auto& w : *writer_arr) {
                                 if (auto ws = w.value<std::string>()) {

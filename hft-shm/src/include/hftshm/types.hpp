@@ -152,6 +152,7 @@ struct SegmentConfig {
     std::size_t element_size;   // Element size in bytes
     std::string codec;          // Codec (e.g., "string/json")
     std::size_t hugepage_size;  // Hugepage size (0 for regular pages, 2MB or 1GB)
+    std::size_t max_consumers;  // Max consumers (default: 8)
     std::vector<std::string> writer;  // Writer process names
     std::vector<std::string> reader;  // Reader process names
 };
