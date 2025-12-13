@@ -231,9 +231,6 @@ int cmd_info(const Args& args) {
     std::cout << "header_size: " << hdr_size << "\n";
     std::cout << "data_path: " << platform.get_data_path(args.name) << "\n";
     std::cout << "data_size: " << dat_size << "\n";
-    if (!cfg->pair.empty()) {
-        std::cout << "pair: " << cfg->pair << "\n";
-    }
     std::cout << "type: " << cfg->type << "\n";
     std::cout << "buffer_size: " << cfg->capacity << "\n";
     std::cout << "element_size: " << cfg->element_size << "\n";
@@ -249,22 +246,9 @@ int cmd_info(const Args& args) {
     std::cout << "\n";
     std::cout << "max_consumers: " << cfg->max_consumers << "\n";
 
-    if (!cfg->writer.empty()) {
-        std::cout << "writer: [";
-        for (std::size_t i = 0; i < cfg->writer.size(); ++i) {
-            if (i > 0) std::cout << ", ";
-            std::cout << cfg->writer[i];
-        }
-        std::cout << "]\n";
-    }
-
-    if (!cfg->reader.empty()) {
-        std::cout << "reader: [";
-        for (std::size_t i = 0; i < cfg->reader.size(); ++i) {
-            if (i > 0) std::cout << ", ";
-            std::cout << cfg->reader[i];
-        }
-        std::cout << "]\n";
+    // Print custom attributes
+    for (const auto& [key, value] : cfg->custom) {
+        std::cout << key << ": " << value << "\n";
     }
 
     // Try to read metadata from header segment

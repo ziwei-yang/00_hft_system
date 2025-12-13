@@ -13,18 +13,15 @@ std::string create_temp_config() {
     std::ofstream f(path);
     f << R"(
 [test.segment1]
-name = "test/segment1"
-pair = "BTC/USDT"
 type = "ringbuffer"
 capacity = "1MB"
 element_size = 64
 codec = "binary"
 hugepage_size = "2MB"
-writer = ["writer1"]
-reader = ["reader1", "reader2"]
+custom_field = "custom_value"
+custom_int = 42
 
 [test.segment2]
-name = "test/segment2"
 type = "snapshot"
 capacity = 2097152
 element_size = 128
@@ -58,18 +55,16 @@ void test_get_config() {
     auto cfg1 = config.get("test.segment1");
     assert(cfg1.has_value());
     assert(cfg1->key == "test.segment1");
-    assert(cfg1->name == "test/segment1");
-    assert(cfg1->pair == "BTC/USDT");
+    assert(cfg1->name == "test.segment1");  // name = key
     assert(cfg1->type == "ringbuffer");
     assert(cfg1->capacity == 1024 * 1024);
     assert(cfg1->element_size == 64);
     assert(cfg1->codec == "binary");
     assert(cfg1->hugepage_size == 2ULL * 1024 * 1024);
-    assert(cfg1->writer.size() == 1);
-    assert(cfg1->writer[0] == "writer1");
-    assert(cfg1->reader.size() == 2);
-    assert(cfg1->reader[0] == "reader1");
-    assert(cfg1->reader[1] == "reader2");
+    // Check custom attributes
+    assert(cfg1->custom.size() == 2);
+    assert(cfg1->custom.at("custom_field") == "custom_value");
+    assert(cfg1->custom.at("custom_int") == "42");
 
     cleanup_temp_config(path);
     std::cout << "  [PASS] get config segment1\n";
@@ -84,14 +79,13 @@ void test_get_config_defaults() {
     auto cfg2 = config.get("test.segment2");
     assert(cfg2.has_value());
     assert(cfg2->key == "test.segment2");
-    assert(cfg2->name == "test/segment2");
+    assert(cfg2->name == "test.segment2");  // name = key
     assert(cfg2->type == "snapshot");
     assert(cfg2->capacity == 2097152);
     assert(cfg2->element_size == 128);
     // Defaults
     assert(cfg2->hugepage_size == hftshm::HUGEPAGE_AUTO);  // Default: auto hugepages
-    assert(cfg2->writer.empty());
-    assert(cfg2->reader.empty());
+    assert(cfg2->custom.empty());  // No custom attributes
 
     cleanup_temp_config(path);
     std::cout << "  [PASS] get config with defaults\n";

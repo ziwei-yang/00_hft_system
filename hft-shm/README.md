@@ -9,7 +9,7 @@ HFT Shared Memory Management Tool - A C++20 CLI for managing SPMC (Single-Produc
 - **SPMC Architecture**: Single producer, multiple consumers per segment
 - **Dual-Segment Design**: Separate header (.hdr) and data (.dat) segments for optimal memory usage
 - **Hugepage Support**: Data segments can use 2MB/1GB hugepages for reduced TLB misses
-- **TOML Configuration**: Define all segments in a single config file
+- **TOML Configuration**: Define all segments in a single config file with custom attributes
 - **Platform Support**: Linux (`/dev/shm/hft/`) and macOS (`/tmp/hft/`)
 
 ## Quick Start
@@ -111,21 +111,19 @@ Show configuration and runtime info for a segment.
 
 ```bash
 $ hft-shm info zwy.mktdata.binance.raw.rx
-name: zwy/mktdata/binance/raw/rx
+name: zwy.mktdata.binance.raw.rx
 status: active
 header_path: /dev/shm/hft/zwy/mktdata/binance/raw/rx.hdr
 header_size: 4096
 data_path: /dev/shm/hft/zwy/mktdata/binance/raw/rx.dat
 data_size: 33554432
-pair: BTC/USDT
 type: ringbuffer
 buffer_size: 33554432
 element_size: 128
 codec: sbe
 hugepage_size: auto (2MB)
 max_consumers: 4
-writer: [zwy.mktdata_receiver.binance]
-reader: [zwy.mktdata_decoder.binance, zwy.logger]
+pair: BTC/USDT
 
 # Metadata (from header segment)
 magic: 0x00024d4853544648
@@ -256,18 +254,21 @@ Default config search order:
 ### Example TOML Config
 
 ```toml
-[segments.zwy.mktdata.binance.raw.rx]
-name = "zwy/mktdata/binance/raw/rx"
-pair = "BTC/USDT"
+[zwy.mktdata.binance.raw.rx]
 type = "ringbuffer"
 capacity = "32MB"
 element_size = 128
 codec = "sbe"
 hugepage_size = "auto"    # auto, 2MB, 1GB, or 0 (disabled)
 max_consumers = 4
-writer = ["zwy.mktdata_receiver.binance"]
-reader = ["zwy.mktdata_decoder.binance", "zwy.logger"]
+# Custom attributes (any key/value pairs for your application)
+pair = "BTC/USDT"
+exchange = "binance"
 ```
+
+Segment detection is based on the presence of a `type` field. The segment name is derived from the TOML section key (e.g., `zwy.mktdata.binance.raw.rx`).
+
+Any unrecognized keys are stored as custom attributes, which are printed by `hft-shm info` and can be used by your application for metadata.
 
 ### Hugepage Configuration
 

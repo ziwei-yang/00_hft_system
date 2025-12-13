@@ -14,7 +14,7 @@ namespace {
 using Platform = hftshm::policies::DefaultPlatformPolicy;
 using Config = hftshm::policies::TomlConfigPolicy;
 
-const char* TEST_SEGMENT = "test.hft-shm";
+const char* TEST_SEGMENT = "test.mktdata.binance.raw.rx";
 const char* HOME_CONFIG = nullptr;  // Will be set in main
 
 void test_init_segment() {
@@ -26,9 +26,9 @@ void test_init_segment() {
 
     auto cfg = config.get(TEST_SEGMENT);
     assert(cfg.has_value());
-    assert(cfg->name == "test/hft-shm");
+    assert(cfg->name == TEST_SEGMENT);  // name = key
     assert(cfg->type == "ringbuffer");
-    assert(cfg->capacity == 2ULL * 1024 * 1024);
+    assert(cfg->capacity == 4ULL * 1024 * 1024);  // 4MB
     assert(cfg->element_size == 1);
     assert(cfg->codec == "string");
 
@@ -60,7 +60,7 @@ void test_write_and_verify() {
     assert(fd >= 0);
 
     std::size_t size = platform.get_size(fd);
-    assert(size == 2ULL * 1024 * 1024);
+    assert(size == 4ULL * 1024 * 1024);  // 4MB
 
     void* ptr = platform.map(fd, size, 0);
     assert(ptr != nullptr);

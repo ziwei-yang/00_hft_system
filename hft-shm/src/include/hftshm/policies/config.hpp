@@ -4,6 +4,7 @@
 #include <string_view>
 #include <optional>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 #include <filesystem>
 #include <stdexcept>
@@ -77,16 +78,11 @@ public:
 
                     auto& section = *value.as_table();
 
-                    // Check if this is a segment config (has 'name' field)
-                    if (section.contains("name")) {
+                    // Check if this is a segment config (has 'type' field)
+                    if (section.contains("type")) {
                         SegmentConfig config;
                         config.key = full_key;
-
-                        if (auto name = section["name"].value<std::string>()) {
-                            config.name = *name;
-                        } else {
-                            throw ConfigError("Missing 'name' in section [" + config.key + "]");
-                        }
+                        config.name = full_key;  // name = key
 
                         if (auto type = section["type"].value<std::string>()) {
                             config.type = *type;
@@ -108,10 +104,6 @@ public:
                             config.element_size = 1;
                         }
 
-                        if (auto pair = section["pair"].value<std::string>()) {
-                            config.pair = *pair;
-                        }
-
                         if (auto codec = section["codec"].value<std::string>()) {
                             config.codec = *codec;
                         }
@@ -129,18 +121,21 @@ public:
                             config.max_consumers = 8;  // Default: 8 consumers
                         }
 
-                        if (auto writer_arr = section["writer"].as_array()) {
-                            for (auto& w : *writer_arr) {
-                                if (auto ws = w.value<std::string>()) {
-                                    config.writer.push_back(*ws);
-                                }
-                            }
-                        }
-
-                        if (auto reader_arr = section["reader"].as_array()) {
-                            for (auto& r : *reader_arr) {
-                                if (auto rs = r.value<std::string>()) {
-                                    config.reader.push_back(*rs);
+                        // Capture custom key/value pairs (any unknown keys)
+                        static const std::unordered_set<std::string> known_keys = {
+                            "type", "capacity", "element_size", "codec", "hugepage_size", "max_consumers"
+                        };
+                        for (auto& [k, v] : section) {
+                            std::string key_str(k.str());
+                            if (known_keys.find(key_str) == known_keys.end() && !v.is_table()) {
+                                if (auto str_val = v.value<std::string>()) {
+                                    config.custom[key_str] = *str_val;
+                                } else if (auto int_val = v.value<int64_t>()) {
+                                    config.custom[key_str] = std::to_string(*int_val);
+                                } else if (auto bool_val = v.value<bool>()) {
+                                    config.custom[key_str] = *bool_val ? "true" : "false";
+                                } else if (auto dbl_val = v.value<double>()) {
+                                    config.custom[key_str] = std::to_string(*dbl_val);
                                 }
                             }
                         }

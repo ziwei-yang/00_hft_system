@@ -5,6 +5,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 #include <stdexcept>
 #include <charconv>
@@ -145,16 +146,14 @@ inline auto format_size(std::size_t bytes) -> std::string {
 // Shared memory segment configuration (from TOML)
 struct SegmentConfig {
     std::string key;            // TOML section key (e.g., "zwy.mktdata.binance.raw.rx")
-    std::string name;           // Display name (e.g., "zwy/mktdata/binance/raw/rx")
-    std::string pair;           // Trading pair (e.g., "BTC/USDT")
+    std::string name;           // Name (same as key)
     std::string type;           // Type (e.g., "ringbuffer")
     std::size_t capacity;       // Size in bytes
     std::size_t element_size;   // Element size in bytes
     std::string codec;          // Codec (e.g., "string/json")
     std::size_t hugepage_size;  // Hugepage size (0 for regular pages, 2MB or 1GB)
     std::size_t max_consumers;  // Max consumers (default: 8)
-    std::vector<std::string> writer;  // Writer process names
-    std::vector<std::string> reader;  // Reader process names
+    std::unordered_map<std::string, std::string> custom;  // Custom key/value pairs
 };
 
 // Active shared memory segment handle
