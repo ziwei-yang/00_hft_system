@@ -1,5 +1,10 @@
 #pragma once
 
+// Re-export shared types (SegmentInfo, SegmentHandle)
+#include <hftshm/types.hpp>
+// Re-export shared layout (HUGEPAGE_2MB, HUGEPAGE_1GB constants)
+#include <hftshm/layout.hpp>
+
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -78,9 +83,7 @@ inline auto parse_size(std::string_view s) -> std::size_t {
     return static_cast<std::size_t>(value * static_cast<double>(multiplier));
 }
 
-// Hugepage size constants
-constexpr std::size_t HUGEPAGE_2MB = 2ULL * 1024 * 1024;
-constexpr std::size_t HUGEPAGE_1GB = 1024ULL * 1024 * 1024;
+// Hugepage threshold for auto-selection (project-specific)
 constexpr std::size_t HUGEPAGE_THRESHOLD = 512ULL * 1024 * 1024;  // 512MB
 
 // Auto-select hugepage size based on capacity
@@ -143,7 +146,7 @@ inline auto format_size(std::size_t bytes) -> std::string {
     }
 }
 
-// Shared memory segment configuration (from TOML)
+// Shared memory segment configuration (from TOML) - project-specific
 struct SegmentConfig {
     std::string key;            // TOML section key (e.g., "zwy.mktdata.binance.raw.rx")
     std::string name;           // Name (same as key)
@@ -156,28 +159,6 @@ struct SegmentConfig {
     std::unordered_map<std::string, std::string> custom;  // Custom key/value pairs
 };
 
-// Active shared memory segment handle
-struct SegmentHandle {
-    int fd;                     // File descriptor
-    void* ptr;                  // Mapped memory pointer
-    std::size_t size;           // Mapped size
-    std::string path;           // Filesystem path
-
-    SegmentHandle() : fd(-1), ptr(nullptr), size(0) {}
-
-    auto is_valid() const -> bool {
-        return fd >= 0 && ptr != nullptr && size > 0;
-    }
-};
-
-// Runtime segment info (from filesystem inspection)
-struct SegmentInfo {
-    std::string path;
-    bool exists;
-    std::size_t size;
-    std::string permissions;
-    std::size_t hugepage_size;
-    std::string last_modified;
-};
+// SegmentHandle and SegmentInfo are re-exported from <hftshm/types.hpp>
 
 } // namespace hftshm

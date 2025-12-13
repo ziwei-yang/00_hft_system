@@ -27,8 +27,8 @@ void test_metadata_alignment() {
 }
 
 void test_metadata_fixed_size() {
-    // Fixed fields should be 36 bytes
-    assert(hftshm::METADATA_FIXED_SIZE == 36);
+    // Fixed fields should be 39 bytes (36 + 3 log2 fields)
+    assert(hftshm::METADATA_FIXED_SIZE == 39);
     std::cout << "  [PASS] METADATA_FIXED_SIZE (= " << hftshm::METADATA_FIXED_SIZE << ")\n";
 }
 
@@ -107,6 +107,9 @@ void test_metadata_init() {
     assert(meta->consumer_0_offset == cons_off);
     assert(meta->header_size == hdr_size);
     assert(meta->index_mask == buffer_size - 1);
+    assert(meta->event_size_log2 == hftshm::size_to_log2(event_size));
+    assert(meta->buffer_size_log2 == hftshm::size_to_log2(buffer_size));
+    assert(meta->header_size_log2 == hftshm::size_to_log2(hdr_size));
 
     // Check padding is zeroed
     for (size_t i = 0; i < sizeof(meta->padding); ++i) {
@@ -204,7 +207,10 @@ void test_memory_layout() {
     assert(reinterpret_cast<uint8_t*>(&meta->consumer_0_offset) - buffer == 0x18);
     assert(reinterpret_cast<uint8_t*>(&meta->header_size) - buffer == 0x1C);
     assert(reinterpret_cast<uint8_t*>(&meta->index_mask) - buffer == 0x20);
-    assert(reinterpret_cast<uint8_t*>(&meta->padding) - buffer == 0x24);
+    assert(reinterpret_cast<uint8_t*>(&meta->event_size_log2) - buffer == 0x24);
+    assert(reinterpret_cast<uint8_t*>(&meta->buffer_size_log2) - buffer == 0x25);
+    assert(reinterpret_cast<uint8_t*>(&meta->header_size_log2) - buffer == 0x26);
+    assert(reinterpret_cast<uint8_t*>(&meta->padding) - buffer == 0x27);
 
     std::cout << "  [PASS] memory layout offsets\n";
 }

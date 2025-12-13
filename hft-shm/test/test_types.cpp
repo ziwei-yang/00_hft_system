@@ -2,7 +2,9 @@
 #include <iostream>
 #include <stdexcept>
 
-#include <hftshm/types.hpp>
+// Include local types.hpp (has parse_size, auto_hugepage_size, align_to_hugepage)
+// Note: shared headers come first in include path, so we need relative include
+#include "../src/include/hftshm/types.hpp"
 
 namespace {
 

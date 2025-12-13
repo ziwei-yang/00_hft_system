@@ -3,7 +3,7 @@
 
 CXX := g++
 CXXFLAGS := -std=c++20 -Wall -Wextra -Wpedantic -O2
-INCLUDES := -Isrc/include -Isrc/third_party
+INCLUDES := -I../../01_shared_headers -Isrc/include -Isrc/third_party
 
 # Platform-specific flags
 UNAME_S := $(shell uname -s)
