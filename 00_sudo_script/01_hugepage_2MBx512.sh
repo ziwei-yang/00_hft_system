@@ -3,6 +3,12 @@
 
 set -euo pipefail
 
+# Linux only - hugepages not supported on other platforms
+if [[ "$(uname -s)" != "Linux" ]]; then
+    echo "Error: This script only works on Linux. Hugepages are not supported on $(uname -s)." >&2
+    exit 1
+fi
+
 # Check sudo without password
 if ! sudo -n true 2>/dev/null; then
     echo "Error: sudo requires password. Configure NOPASSWD or run 'sudo -v' first" >&2
