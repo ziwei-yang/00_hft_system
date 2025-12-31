@@ -49,17 +49,27 @@ else
     echo "=== GRUB HFT Optimization Script (Non-EC2 Mode) ==="
 fi
 
-# Get total CPU cores and calculate isolated range (keep core 0 for system)
-# Use --all to count all installed CPUs, not just available (non-isolated) ones
+# CPU isolation range: cores 1-16 for HFT workloads (or 1-NUM if fewer cores)
+# Core 0 reserved for system, cores 17+ available for general use
 TOTAL_CORES=$(nproc --all)
 if [[ $TOTAL_CORES -lt 2 ]]; then
     echo "Error: Need at least 2 CPU cores for isolation (found $TOTAL_CORES)"
     exit 1
 fi
-NUM=$((TOTAL_CORES - 1))
+
+ISOLATE_START=1
+if [[ $TOTAL_CORES -gt 16 ]]; then
+    ISOLATE_END=16
+else
+    ISOLATE_END=$((TOTAL_CORES - 1))
+fi
 
 echo "Detected $TOTAL_CORES CPU cores"
-echo "Will isolate cores 1-$NUM (keeping core 0 for system)"
+if [[ $TOTAL_CORES -gt 16 ]]; then
+    echo "Will isolate cores ${ISOLATE_START}-${ISOLATE_END} (core 0 for system, cores 17+ for general use)"
+else
+    echo "Will isolate cores ${ISOLATE_START}-${ISOLATE_END} (core 0 for system)"
+fi
 echo ""
 
 # HFT kernel parameters based on environment
@@ -70,9 +80,9 @@ if [[ "$EC2_MODE" == true ]]; then
     echo "Applying FULL optimization (EC2):"
     echo "  isolcpus, nohz_full, rcu_nocbs, irqaffinity, intel_pstate, processor.max_cstate, idle"
     HFT_PARAMS=(
-        ["isolcpus"]="1-$NUM"
-        ["nohz_full"]="1-$NUM"
-        ["rcu_nocbs"]="1-$NUM"
+        ["isolcpus"]="${ISOLATE_START}-${ISOLATE_END}"
+        ["nohz_full"]="${ISOLATE_START}-${ISOLATE_END}"
+        ["rcu_nocbs"]="${ISOLATE_START}-${ISOLATE_END}"
         ["irqaffinity"]="0"
         ["intel_pstate"]="disable"
         ["processor.max_cstate"]="0"
@@ -83,9 +93,9 @@ else
     echo "Applying REDUCED optimization (non-EC2):"
     echo "  isolcpus, nohz_full, rcu_nocbs, irqaffinity"
     HFT_PARAMS=(
-        ["isolcpus"]="1-$NUM"
-        ["nohz_full"]="1-$NUM"
-        ["rcu_nocbs"]="1-$NUM"
+        ["isolcpus"]="${ISOLATE_START}-${ISOLATE_END}"
+        ["nohz_full"]="${ISOLATE_START}-${ISOLATE_END}"
+        ["rcu_nocbs"]="${ISOLATE_START}-${ISOLATE_END}"
         ["irqaffinity"]="0"
     )
 fi
