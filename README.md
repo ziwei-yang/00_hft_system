@@ -36,9 +36,10 @@ Essential scripts that run after machine startup. Scripts use sudo internally fo
 
 ```bash
 # Run in order after machine startup:
-./00_sudo_script/00_grub_optimise.sh   # Then reboot
+./00_sudo_script/00_grub_optimise.sh    # Then reboot
 ./00_sudo_script/01_hugepage_2MBx512.sh
 ./00_sudo_script/04_install_hft-shm.sh
+./00_sudo_script/05_chrony_time_sync.sh # Switch to chrony, sync to non-smearing UTC
 ./00_sudo_script/05_init_share_mem.sh
 ```
 
@@ -71,6 +72,19 @@ Builds and installs `hft-shm` to `/usr/local/bin/`.
 
 ```bash
 ./00_sudo_script/04_install_hft-shm.sh
+```
+
+### 05_chrony_time_sync.sh
+
+Replaces `systemd-timesyncd` with `chrony`, configured against verified
+non-smearing UTC sources (Cloudflare anycast + NIST stratum-1) for
+HFT-grade clock determinism. Neutralises vendor / DHCP source directives
+in `/etc/chrony/chrony.conf` (idempotent, byte-deterministic round-trip).
+Verifies sub-50 ms convergence and provider-diverse ≥3-source quorum
+before exiting. Re-runs are no-ops once configured.
+
+```bash
+./00_sudo_script/05_chrony_time_sync.sh
 ```
 
 ### 05_init_share_mem.sh
