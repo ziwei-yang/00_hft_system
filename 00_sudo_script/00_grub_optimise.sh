@@ -49,8 +49,9 @@ else
     echo "=== GRUB HFT Optimization Script (Non-EC2 Mode) ==="
 fi
 
-# CPU isolation range: cores 1-10 for HFT workloads (or 1-NUM if fewer cores)
-# Core 0 reserved for system, cores 11+ available for general use
+# CPU isolation range: cores 1-2 for HFT workloads (or 1-NUM if fewer cores)
+# Core 1 is designated for the trading strategy service, core 2 for the
+# market data service. Core 0 reserved for system, cores 3+ for general use
 TOTAL_CORES=$(nproc --all)
 if [[ $TOTAL_CORES -lt 2 ]]; then
     echo "Error: Need at least 2 CPU cores for isolation (found $TOTAL_CORES)"
@@ -58,15 +59,14 @@ if [[ $TOTAL_CORES -lt 2 ]]; then
 fi
 
 ISOLATE_START=1
-if [[ $TOTAL_CORES -gt 10 ]]; then
-    ISOLATE_END=10
-else
+ISOLATE_END=2
+if [[ $TOTAL_CORES -le 3 ]]; then
     ISOLATE_END=$((TOTAL_CORES - 1))
 fi
 
 echo "Detected $TOTAL_CORES CPU cores"
-if [[ $TOTAL_CORES -gt 10 ]]; then
-    echo "Will isolate cores ${ISOLATE_START}-${ISOLATE_END} (core 0 for system, cores 11+ for general use)"
+if [[ $TOTAL_CORES -gt 3 ]]; then
+    echo "Will isolate cores ${ISOLATE_START}-${ISOLATE_END} (core 0 for system, cores 3+ for general use)"
 else
     echo "Will isolate cores ${ISOLATE_START}-${ISOLATE_END} (core 0 for system)"
 fi
