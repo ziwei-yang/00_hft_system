@@ -45,17 +45,17 @@ Essential scripts that run after machine startup. Scripts use sudo internally fo
 
 ### 00_grub_optimise.sh
 
-Configures GRUB kernel parameters for low-latency performance:
-- `isolcpus` - Isolate cores from scheduler
-- `nohz_full` - Disable timer ticks on isolated cores
-- `rcu_nocbs` - Offload RCU callbacks
-- `irqaffinity` - Pin IRQs to core 0
-
-EC2-only: `intel_pstate=disable`, `processor.max_cstate=0`, `idle=poll`
+Configures GRUB kernel parameters for low-latency performance at **physical-core granularity**:
+- Detects SMT/Hyper-Threading via `/sys/devices/system/cpu/cpu*/topology/thread_siblings_list`
+- Isolates physical cores `P1..P(min(3, N_phys - 1))` together with all of their HT siblings (e.g. NUC 8P+8E adjacent HT -> `2-7`; AWS 4-phys 8-vCPU strided HT -> `1-3,5-7`; AWS 2-phys 4-vCPU strided HT -> `1,3`; HT off -> `1-3` / `1`), always keeping physical core `P0` untouched for OS/IRQs
+- Verifies P-core membership when `/sys/devices/cpu_core/cpus` is present (Intel hybrid CPUs)
+- Fails closed on malformed/missing/duplicate `GRUB_CMDLINE_LINUX_DEFAULT`, `/etc/default/grub.d/*.cfg` overrides, partial offline CPUs while SMT is active, or `< 2` physical cores; auto-restores `/etc/default/grub` if `update-grub` fails
+- Sets `isolcpus`, `nohz_full`, `rcu_nocbs`, `irqaffinity=0` (EC2-only adds `intel_pstate=disable`, `processor.max_cstate=0`, `idle=poll`)
 
 ```bash
-./00_sudo_script/00_grub_optimise.sh
-# Requires reboot
+./00_sudo_script/00_grub_optimise.sh --dry-run   # Preview topology and diff (no sudo)
+./00_sudo_script/00_grub_optimise.sh             # Apply and run update-grub (requires reboot)
+bash test/test_grub_optimise.sh                  # Offline 13-scenario test suite (bash >= 4.3)
 ```
 
 ### 01_hugepage_2MBx512.sh
