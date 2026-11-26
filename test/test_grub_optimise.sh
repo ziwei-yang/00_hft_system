@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
-# Offline unit test suite for 00_sudo_script/00_grub_optimise.sh (13 scenarios).
-# Runs on bash >= 4.3 (Ubuntu Linux / NUC isolated compile_check directory).
-# Hard sandbox guards ensure real sudo, real update-grub, /etc/default/grub, and /sys are NEVER touched.
+# Offline sandbox test suite for 00_sudo_script/03_grub_cpu_isolation.sh and verify_03_grub_cpu_isolation.sh.
+# Requires GNU bash >= 4.3. NEVER touches real /etc, /boot, /sys, /proc, /var, or real sudo.
 set -u
 
 if (( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 3) )); then
-    echo "SKIP: test_grub_optimise.sh requires bash >= 4.3 (found ${BASH_VERSION}); run on Linux/NUC compile_check"
+    echo "SKIP: test_grub_optimise.sh requires bash >= 4.3 (found ${BASH_VERSION}); run on Linux/Ubuntu 24.04"
     exit 0
 fi
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SCRIPT="$REPO/00_sudo_script/00_grub_optimise.sh"
-if [[ ! -f "$SCRIPT" ]]; then
-    echo "FATAL: script not found: $SCRIPT" >&2
+SCRIPT="$REPO/00_sudo_script/03_grub_cpu_isolation.sh"
+VERIFIER="$REPO/00_sudo_script/verify_03_grub_cpu_isolation.sh"
+if [[ ! -f "$SCRIPT" || ! -f "$VERIFIER" ]]; then
+    echo "FATAL: missing $SCRIPT or $VERIFIER" >&2
     exit 2
 fi
 
@@ -28,6 +28,7 @@ trap cleanup EXIT
 
 mkdir -p "$T/bin"
 
+# Mock sudo: logs command and runs directly inside sandbox
 cat > "$T/bin/sudo" <<'EOF'
 #!/usr/bin/env bash
 if [[ "${1:-}" == "-n" && "${2:-}" == "true" ]]; then
@@ -38,23 +39,101 @@ exec "$@"
 EOF
 chmod +x "$T/bin/sudo"
 
+# Mock chown: no-op in unprivileged sandbox
+cat > "$T/bin/chown" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+chmod +x "$T/bin/chown"
+
+# Mock grub-editenv: prints key=val lines from grubenv
+cat > "$T/bin/grub-editenv" <<'EOF'
+#!/usr/bin/env bash
+env_file="${1:-}"
+cmd="${2:-list}"
+if [[ "$cmd" == "list" && -r "$env_file" ]]; then
+    grep -E '^[A-Za-z0-9_]+=' "$env_file" || true
+fi
+EOF
+chmod +x "$T/bin/grub-editenv"
+
+# Mock grub-script-check: checks balanced braces or forced failure flag
+cat > "$T/bin/grub-script-check" <<'EOF'
+#!/usr/bin/env bash
+if [[ "${FAKE_GRUB_SCRIPT_CHECK_FAIL:-0}" == "1" ]]; then
+    echo "fake grub-script-check syntax error" >&2
+    exit 1
+fi
+[[ -r "${1:-}" ]]
+EOF
+chmod +x "$T/bin/grub-script-check"
+
+# Realistic POSIX /bin/sh update-grub mock:
+# Sources HFT_GRUB_FILE and all sorted HFT_GRUB_D_DIR/*.cfg via /bin/sh,
+# then generates a real grub.cfg honoring FAKE_GRUB_DEFAULT_EXPR & FAKE_GRUB_EXTRA_ENTRIES.
 cat > "$T/bin/update-grub" <<'EOF'
 #!/usr/bin/env bash
+set -euo pipefail
 printf 'update-grub\n' >> "${FAKE_UPDATE_GRUB_LOG:?}"
 if [[ "${FAKE_UPDATE_GRUB_FAIL:-0}" == "1" ]]; then
     echo "fake update-grub failed" >&2
     exit 1
 fi
-echo "Generating grub configuration file ... done"
-exit 0
+
+grub_file="${HFT_GRUB_FILE:?}"
+grub_d="${HFT_GRUB_D_DIR:?}"
+grub_cfg="${HFT_GRUB_CFG:?}"
+mkdir -p "$(dirname "$grub_cfg")"
+
+eval_out="$(/bin/sh -c '
+    set -e
+    GRUB_DEFAULT="0"
+    GRUB_CMDLINE_LINUX=""
+    GRUB_CMDLINE_LINUX_DEFAULT=""
+    . "$1"
+    if [ -d "$2" ]; then
+        for f in "$2"/*.cfg; do
+            [ -f "$f" ] || continue
+            . "$f"
+        done
+    fi
+    printf "DEF=%s\n" "$GRUB_DEFAULT"
+    printf "LINUX=%s\n" "$GRUB_CMDLINE_LINUX"
+    printf "LINUX_DEF=%s\n" "$GRUB_CMDLINE_LINUX_DEFAULT"
+' _ "$grub_file" "$grub_d")"
+
+def_val="$(printf '%s\n' "$eval_out" | awk -F= '$1=="DEF"{sub(/^DEF=/,""); print; exit}')"
+lin_val="$(printf '%s\n' "$eval_out" | awk -F= '$1=="LINUX"{sub(/^LINUX=/,""); print; exit}')"
+lin_def="$(printf '%s\n' "$eval_out" | awk -F= '$1=="LINUX_DEF"{sub(/^LINUX_DEF=/,""); print; exit}')"
+
+combined="$(printf '%s %s' "$lin_val" "$lin_def" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//; s/[[:space:]]+/ /g')"
+if [[ "${FAKE_GRUB_DROP_CONSOLE:-0}" == "1" ]]; then
+    combined="$(printf '%s\n' "$combined" | sed -E 's/console=[^ ]+//g')"
+fi
+
+default_stmt="${FAKE_GRUB_DEFAULT_STMT:-set default=\"${def_val}\"}"
+cat > "$grub_cfg" <<CFG
+if [ "\${next_entry}" ] ; then
+   set default="\${next_entry}"
+else
+   ${default_stmt}
+fi
+menuentry 'Ubuntu' --class ubuntu --id 'gnulinux-simple-ubuntu' {
+    linux /boot/vmlinuz-6.8.0 root=PARTUUID=1111-2222 ro ${combined}
+    initrd /boot/initrd.img-6.8.0
+}
+menuentry 'Ubuntu (recovery mode)' --class ubuntu --id 'gnulinux-recovery-ubuntu' {
+    linux /boot/vmlinuz-6.8.0 root=PARTUUID=1111-2222 ro recovery nomodeset
+    initrd /boot/initrd.img-6.8.0
+}
+submenu 'Advanced options for Ubuntu' --id 'gnulinux-advanced-ubuntu' {
+    menuentry 'Ubuntu, with Linux 6.8.0' --id 'gnulinux-6.8.0-advanced' {
+        linux /boot/vmlinuz-6.8.0 root=PARTUUID=1111-2222 ro ${combined}
+    }
+}
+CFG
 EOF
 chmod +x "$T/bin/update-grub"
-
-cat > "$T/bin/nproc" <<'EOF'
-#!/usr/bin/env bash
-echo "${FAKE_NPROC:-4}"
-EOF
-chmod +x "$T/bin/nproc"
 
 export PATH="$T/bin:$PATH"
 
@@ -63,27 +142,11 @@ FAIL=0
 ok()  { echo "  PASS  $1"; PASS=$((PASS + 1)); }
 bad() { echo "  FAIL  $1 — $2"; FAIL=$((FAIL + 1)); }
 
-assert_sandbox_guards() {
-    local grub_path="$1"
-    local sysfs_dir="$2"
-    local pcore_file="$3"
-    local grub_d_dir="$4"
-    [[ "$(command -v sudo)" == "$T/bin/sudo" ]] || { echo "GUARD FAIL: sudo is $(command -v sudo)" >&2; exit 99; }
-    [[ "$(command -v update-grub)" == "$T/bin/update-grub" ]] || { echo "GUARD FAIL: update-grub is $(command -v update-grub)" >&2; exit 99; }
-    [[ "$grub_path" == "$T/"* ]] || { echo "GUARD FAIL: grub_path outside sandbox: $grub_path" >&2; exit 99; }
-    [[ "$sysfs_dir" == "$T/"* ]] || { echo "GUARD FAIL: sysfs_dir outside sandbox: $sysfs_dir" >&2; exit 99; }
-    [[ "$pcore_file" == "$T/"* ]] || { echo "GUARD FAIL: pcore_file outside sandbox: $pcore_file" >&2; exit 99; }
-    [[ "$grub_d_dir" == "$T/"* ]] || { echo "GUARD FAIL: grub_d_dir outside sandbox: $grub_d_dir" >&2; exit 99; }
-}
-
-# Helper: build mock sysfs CPU tree
-# Usage: make_sysfs <dir> <smt_active:0|1|none> <spec...>
-# Each spec is "<cpu_id>:<siblings_list>[:online0|online1]"
 make_sysfs() {
     local dir="$1"
     local smt="$2"
     shift 2
-    rm -rf /tmp/"$(basename "$T")"/"$(basename "$dir")"
+    rm -rf /tmp/"$(basename "$T")"/"${dir#$T/}"
     mkdir -p "$dir"
     if [[ "$smt" != "none" ]]; then
         mkdir -p "$dir/smt"
@@ -104,321 +167,295 @@ make_sysfs() {
     done
 }
 
-make_grub() {
-    local f="$1"
-    local def_line="$2"
-    local linux_line="${3:-GRUB_CMDLINE_LINUX=\"\"}"
-    cat > "$f" <<EOF
+# Build a fresh case root directory under $T/<name>
+init_case_root() {
+    local name="$1"
+    local vendor="$2"
+    local boot_id="${3:-boot-id-1111}"
+    local root="$T/case_${name}"
+    rm -rf /tmp/"$(basename "$T")"/case_"$name"
+    mkdir -p "$root/etc/default/grub.d" "$root/boot/grub" "$root/proc/sys/kernel/random" "$root/sys/devices/system/cpu" "$root/var/lib/hft-bootstrap"
+    echo "$boot_id" > "$root/proc/sys/kernel/random/boot_id"
+    printf 'processor\t: 0\nvendor_id\t: %s\n' "$vendor" > "$root/proc/cpuinfo"
+    cat > "$root/etc/default/grub" <<'EOF'
 GRUB_DEFAULT=0
-GRUB_TIMEOUT_STYLE=hidden
 GRUB_TIMEOUT=1
-$def_line
-$linux_line
+GRUB_CMDLINE_LINUX_DEFAULT="quiet splash"
+GRUB_CMDLINE_LINUX=""
 EOF
+    : > "$root/boot/grub/grubenv"
+    printf '%s\n' "$root"
 }
 
 run_case() {
     local name="$1"
-    local grub_path="$2"
-    local sysfs_dir="$3"
-    local pcore_file="$4"
-    local grub_d_dir="$5"
-    local ec2_mode="$6"
-    local nproc_val="$7"
-    shift 7
+    local root="$2"
+    local ec2="$3"
+    local pcore="$4"
+    shift 4
 
-    assert_sandbox_guards "$grub_path" "$sysfs_dir" "$pcore_file" "$grub_d_dir"
+    [[ "$root" == "$T/"* ]] || { echo "GUARD FAIL: root outside sandbox: $root" >&2; exit 99; }
     : > "$T/sudo.log"
     : > "$T/update_grub.log"
-
     OUT_FILE="$T/${name}.out"
+
     set +e
     FAKE_SUDO_LOG="$T/sudo.log" \
     FAKE_UPDATE_GRUB_LOG="$T/update_grub.log" \
-    FAKE_NPROC="$nproc_val" \
-    HFT_GRUB_SYSFS_CPU_DIR="$sysfs_dir" \
-    HFT_GRUB_PCORE_CPUS_FILE="$pcore_file" \
-    HFT_GRUB_D_DIR="$grub_d_dir" \
-    HFT_GRUB_EC2_MODE="$ec2_mode" \
-    HFT_GRUB_SUDO="$T/bin/sudo" \
-    HFT_GRUB_UPDATE_CMD="$T/bin/update-grub" \
-        bash "$SCRIPT" "$grub_path" "$@" > "$OUT_FILE" 2>&1
+    HFT_ROOT="$root" \
+    HFT_STATE_DIR="$root/var/lib/hft-bootstrap" \
+    HFT_SKIP_OS_CHECK=1 \
+    HFT_SKIP_PREREQS=1 \
+    HFT_EC2_MODE="$ec2" \
+    HFT_SUDO_CMD="$T/bin/sudo" \
+    HFT_CHOWN_CMD="$T/bin/chown" \
+    HFT_UPDATE_GRUB_CMD="$T/bin/update-grub" \
+    HFT_GRUB_SCRIPT_CHECK_CMD="$T/bin/grub-script-check" \
+    HFT_GRUB_EDITENV_CMD="$T/bin/grub-editenv" \
+    HFT_GRUB_FILE="$root/etc/default/grub" \
+    HFT_GRUB_D_DIR="$root/etc/default/grub.d" \
+    HFT_GRUB_CFG="$root/boot/grub/grub.cfg" \
+    HFT_GRUB_ENV="$root/boot/grub/grubenv" \
+    HFT_GRUB_SYSFS_CPU_DIR="$root/sys/devices/system/cpu" \
+    HFT_GRUB_PCORE_CPUS_FILE="$pcore" \
+        bash "$SCRIPT" "$@" > "$OUT_FILE" 2>&1
     RC=$?
     set -e
 }
 
-get_default_cmdline() {
-    grep '^GRUB_CMDLINE_LINUX_DEFAULT=' "$1" | sed -E 's/^GRUB_CMDLINE_LINUX_DEFAULT="(.*)"[[:space:]]*$/\1/'
-}
-
 # ==============================================================================
-# Case 1: NUC 16 physical cores (8P adjacent HT 0-1..14-15 + 8E 16..23) + P-core check
+# Case 1: NUC 8P+8E HT + P-core check + preserves existing params
 # ==============================================================================
-echo "=== Case 1: NUC 16 physical cores (8P HT + 8E) ==="
-make_sysfs "$T/sys_nuc" 1 \
+echo "=== Case 1: NUC 8P+8E HT + P-core check ==="
+R="$(init_case_root c1 GenuineIntel)"
+make_sysfs "$R/sys/devices/system/cpu" 1 \
     0:0-1 1:0-1 2:2-3 3:2-3 4:4-5 5:4-5 6:6-7 7:6-7 \
     8:8-9 9:8-9 10:10-11 11:10-11 12:12-13 13:12-13 14:14-15 15:14-15 \
     16:16 17:17 18:18 19:19 20:20 21:21 22:22 23:23
-echo "0-15" > "$T/pcore_nuc"
-mkdir -p "$T/grubd_empty"
-make_grub "$T/grub_c1" 'GRUB_CMDLINE_LINUX_DEFAULT="quiet splash irqaffinity=0 nohz_full=1-2 isolcpus=1-2 rcu_nocbs=1-2 pcie_aspm=off pcie_aspm.policy=performance intel_idle.max_cstate=0 lockdown=none"'
-run_case c1 "$T/grub_c1" "$T/sys_nuc" "$T/pcore_nuc" "$T/grubd_empty" 0 24
-cl=$(get_default_cmdline "$T/grub_c1")
+echo "0-15" > "$R/pcore"
+cat > "$R/etc/default/grub" <<'EOF'
+GRUB_DEFAULT=0
+GRUB_CMDLINE_LINUX_DEFAULT="quiet splash isolcpus=1-2 pcie_aspm=off lockdown=none"
+GRUB_CMDLINE_LINUX="rcu_nocbs=1-2 foo=bar"
+EOF
+run_case c1 "$R" 0 "$R/pcore"
 if [[ $RC -eq 0 ]] \
-   && [[ "$cl" == *"isolcpus=2-7"* ]] \
-   && [[ "$cl" == *"nohz_full=2-7"* ]] \
-   && [[ "$cl" == *"rcu_nocbs=2-7"* ]] \
-   && [[ "$cl" == *"irqaffinity=0"* ]] \
-   && [[ "$cl" == *"pcie_aspm=off"* ]] \
-   && [[ "$cl" == *"intel_idle.max_cstate=0"* ]] \
-   && [[ "$cl" == *"lockdown=none"* ]] \
+   && grep -q "isolcpus=domain,managed_irq,2-7" "$R/boot/grub/grub.cfg" \
+   && grep -q "nohz_full=2-7" "$R/boot/grub/grub.cfg" \
+   && grep -q "rcu_nocbs=2-7" "$R/boot/grub/grub.cfg" \
+   && grep -q "irqaffinity=0" "$R/boot/grub/grub.cfg" \
+   && grep -q "pcie_aspm=off" "$R/boot/grub/grub.cfg" \
+   && grep -q "foo=bar" "$R/boot/grub/grub.cfg" \
+   && ! grep -q "intel_pstate=disable" "$R/boot/grub/grub.cfg" \
+   && ! grep -q "idle=poll" "$R/boot/grub/grub.cfg" \
+   && /bin/sh -n "$R/etc/default/grub.d/99-hft-isolation.cfg" \
    && grep -q "P-core check: PASS" "$OUT_FILE"; then
-    ok "NUC 8P+8E HT -> isolcpus=2-7, preserves non-HFT params, P-core check PASS"
+    ok "NUC 8P+8E -> isolcpus=domain,managed_irq,2-7 via POSIX drop-in, strips old keys, preserves non-HFT"
 else
-    bad "Case 1 NUC" "rc=$RC cl=[$cl] out=[$(tail -n 5 "$OUT_FILE")]"
+    bad "Case 1 NUC" "rc=$RC out=[$(tail -n 6 "$OUT_FILE")]"
 fi
 
 # ==============================================================================
-# Case 2: AWS c7i.2xlarge (4 phys / 8 vCPU strided HT: 0,4 / 1,5 / 2,6 / 3,7)
+# Case 2: Intel EC2 4c/8vCPU + 50-cloudimg-settings.cfg preserved
 # ==============================================================================
-echo "=== Case 2: AWS c7i.2xlarge (4 phys / 8 vCPU strided HT, EC2) ==="
-make_sysfs "$T/sys_aws4_ht" 1 0:0,4 1:1,5 2:2,6 3:3,7 4:0,4 5:1,5 6:2,6 7:3,7
-make_grub "$T/grub_c2" 'GRUB_CMDLINE_LINUX_DEFAULT="console=ttyS0"'
-run_case c2 "$T/grub_c2" "$T/sys_aws4_ht" "$T/no_pcore" "$T/grubd_empty" 1 8
-cl=$(get_default_cmdline "$T/grub_c2")
+echo "=== Case 2: Intel EC2 4c/8vCPU + 50-cloudimg-settings.cfg ==="
+R="$(init_case_root c2 GenuineIntel)"
+make_sysfs "$R/sys/devices/system/cpu" 1 0:0,4 1:1,5 2:2,6 3:3,7 4:0,4 5:1,5 6:2,6 7:3,7
+cat > "$R/etc/default/grub.d/50-cloudimg-settings.cfg" <<'EOF'
+GRUB_CMDLINE_LINUX_DEFAULT="console=tty1 console=ttyS0 nvme_core.io_timeout=4294967295"
+EOF
+run_case c2 "$R" 1 "$R/no_pcore"
 if [[ $RC -eq 0 ]] \
-   && [[ "$cl" == *"isolcpus=1-3,5-7"* ]] \
-   && [[ "$cl" == *"nohz_full=1-3,5-7"* ]] \
-   && [[ "$cl" == *"rcu_nocbs=1-3,5-7"* ]] \
-   && [[ "$cl" == *"irqaffinity=0"* ]] \
-   && [[ "$cl" == *"intel_pstate=disable"* ]] \
-   && [[ "$cl" == *"processor.max_cstate=0"* ]] \
-   && [[ "$cl" == *"idle=poll"* ]] \
-   && grep -qi "idle=poll" "$OUT_FILE"; then
-    ok "AWS 4-phys 8-vCPU strided HT -> 1-3,5-7 (0,4 untouched) + EC2 params"
+   && grep -q "console=tty1 console=ttyS0 nvme_core.io_timeout=4294967295" "$R/boot/grub/grub.cfg" \
+   && grep -q "isolcpus=domain,managed_irq,1-3,5-7" "$R/boot/grub/grub.cfg" \
+   && grep -q "intel_pstate=disable" "$R/boot/grub/grub.cfg" \
+   && ! grep -q "idle=poll" "$R/boot/grub/grub.cfg"; then
+    ok "Intel EC2 4c/8vCPU preserves 50-cloudimg-settings.cfg + intel_pstate=disable, NO default idle=poll"
 else
-    bad "Case 2 AWS 4p HT" "rc=$RC cl=[$cl]"
+    bad "Case 2 Intel EC2" "rc=$RC out=[$(tail -n 6 "$OUT_FILE")]"
 fi
 
 # ==============================================================================
-# Case 3: AWS 4 phys cores, HT OFF (ThreadsPerCore=1)
+# Case 3: AMD EC2 4c/8vCPU & 2c/4vCPU -> NO intel_pstate=disable, NO default idle=poll
 # ==============================================================================
-echo "=== Case 3: AWS 4 phys cores, HT OFF ==="
-make_sysfs "$T/sys_aws4_noht" 0 0:0 1:1 2:2 3:3
-make_grub "$T/grub_c3" 'GRUB_CMDLINE_LINUX_DEFAULT="console=ttyS0"'
-run_case c3 "$T/grub_c3" "$T/sys_aws4_noht" "$T/no_pcore" "$T/grubd_empty" 1 4
-cl=$(get_default_cmdline "$T/grub_c3")
-if [[ $RC -eq 0 && "$cl" == *"isolcpus=1-3"* && "$cl" == *"nohz_full=1-3"* && "$cl" == *"rcu_nocbs=1-3"* ]]; then
-    ok "AWS 4-phys HT OFF -> 1-3"
+echo "=== Case 3: AMD EC2 4c & 2c + explicit --enable-idle-poll / --no-managed-irq ==="
+R="$(init_case_root c3a AuthenticAMD)"
+make_sysfs "$R/sys/devices/system/cpu" 1 0:0,4 1:1,5 2:2,6 3:3,7 4:0,4 5:1,5 6:2,6 7:3,7
+run_case c3a "$R" 1 "$R/no_pcore"
+ok_4c=0
+if [[ $RC -eq 0 ]] \
+   && grep -q "isolcpus=domain,managed_irq,1-3,5-7" "$R/boot/grub/grub.cfg" \
+   && ! grep -q "intel_pstate=disable" "$R/boot/grub/grub.cfg" \
+   && ! grep -q "idle=poll" "$R/boot/grub/grub.cfg"; then
+    ok_4c=1
+fi
+
+R2="$(init_case_root c3b AuthenticAMD)"
+make_sysfs "$R2/sys/devices/system/cpu" 1 0:0,2 1:1,3 2:0,2 3:1,3
+run_case c3b "$R2" 1 "$R2/no_pcore" --enable-idle-poll --no-managed-irq
+ok_2c=0
+if [[ $RC -eq 0 ]] \
+   && grep -q "isolcpus=1,3 " "$R2/boot/grub/grub.cfg" \
+   && ! grep -q "managed_irq" "$R2/boot/grub/grub.cfg" \
+   && ! grep -q "intel_pstate=disable" "$R2/boot/grub/grub.cfg" \
+   && grep -q "idle=poll" "$R2/boot/grub/grub.cfg"; then
+    ok_2c=1
+fi
+
+if [[ $ok_4c -eq 1 && $ok_2c -eq 1 ]]; then
+    ok "AMD EC2 4c/2c omits intel_pstate=disable; --enable-idle-poll & --no-managed-irq work"
 else
-    bad "Case 3 AWS 4p no-HT" "rc=$RC cl=[$cl]"
+    bad "Case 3 AMD EC2" "ok_4c=$ok_4c ok_2c=$ok_2c out=[$(tail -n 6 "$OUT_FILE")]"
 fi
 
 # ==============================================================================
-# Case 4: AWS c7i.xlarge (2 phys / 4 vCPU strided HT: 0,2 / 1,3)
+# Case 4: 1-phys-core / partial offline / malformed siblings -> fail-closed
 # ==============================================================================
-echo "=== Case 4: AWS 2 phys / 4 vCPU strided HT ==="
-make_sysfs "$T/sys_aws2_ht" 1 0:0,2 1:1,3 2:0,2 3:1,3
-make_grub "$T/grub_c4" 'GRUB_CMDLINE_LINUX_DEFAULT="console=ttyS0"'
-run_case c4 "$T/grub_c4" "$T/sys_aws2_ht" "$T/no_pcore" "$T/grubd_empty" 1 4
-cl=$(get_default_cmdline "$T/grub_c4")
-if [[ $RC -eq 0 && "$cl" == *"isolcpus=1,3"* && "$cl" == *"nohz_full=1,3"* && "$cl" == *"rcu_nocbs=1,3"* ]]; then
-    ok "AWS 2-phys 4-vCPU strided HT -> 1,3 (0,2 untouched)"
+echo "=== Case 4: Topology safety invariants (1p, partial offline, malformed siblings) ==="
+R="$(init_case_root c4a GenuineIntel)"
+make_sysfs "$R/sys/devices/system/cpu" 1 0:0-1 1:0-1
+run_case c4a "$R" 1 "$R/no_pcore"
+rc_1p=$RC
+
+R="$(init_case_root c4b GenuineIntel)"
+make_sysfs "$R/sys/devices/system/cpu" 1 0:0-1 1:0-1 2:2-3 3:2-3:online0
+run_case c4b "$R" 0 "$R/no_pcore"
+rc_part=$RC
+
+R="$(init_case_root c4c GenuineIntel)"
+make_sysfs "$R/sys/devices/system/cpu" 1 0:0-1 1:5-2 2:2-3 3:2-3
+run_case c4c "$R" 0 "$R/no_pcore"
+rc_bad=$RC
+
+if [[ $rc_1p -ne 0 && $rc_part -ne 0 && $rc_bad -ne 0 ]]; then
+    ok "1-phys-core, partial offline (smt=1), and inverted siblings all fail-closed"
 else
-    bad "Case 4 AWS 2p HT" "rc=$RC cl=[$cl]"
+    bad "Case 4 invariants" "rcs=$rc_1p,$rc_part,$rc_bad"
 fi
 
 # ==============================================================================
-# Case 5: AWS 2 phys cores, HT OFF
+# Case 5: Post-99 grub.d override rejected fail-closed
 # ==============================================================================
-echo "=== Case 5: AWS 2 phys cores, HT OFF ==="
-make_sysfs "$T/sys_aws2_noht" 0 0:0 1:1
-make_grub "$T/grub_c5" 'GRUB_CMDLINE_LINUX_DEFAULT="console=ttyS0"'
-run_case c5 "$T/grub_c5" "$T/sys_aws2_noht" "$T/no_pcore" "$T/grubd_empty" 1 2
-cl=$(get_default_cmdline "$T/grub_c5")
-if [[ $RC -eq 0 && "$cl" == *"isolcpus=1 "* || ( $RC -eq 0 && "$cl" =~ isolcpus=1($|[[:space:]]) ) ]]; then
-    ok "AWS 2-phys HT OFF -> 1"
-else
-    bad "Case 5 AWS 2p no-HT" "rc=$RC cl=[$cl]"
-fi
-
-# ==============================================================================
-# Case 6: 3 phys cores, HT ON (strided 0,3 / 1,4 / 2,5)
-# ==============================================================================
-echo "=== Case 6: 3 phys cores, HT ON ==="
-make_sysfs "$T/sys_3p_ht" 1 0:0,3 1:1,4 2:2,5 3:0,3 4:1,4 5:2,5
-make_grub "$T/grub_c6" 'GRUB_CMDLINE_LINUX_DEFAULT="quiet"'
-run_case c6 "$T/grub_c6" "$T/sys_3p_ht" "$T/no_pcore" "$T/grubd_empty" 0 6
-cl=$(get_default_cmdline "$T/grub_c6")
-if [[ $RC -eq 0 && "$cl" == *"isolcpus=1-2,4-5"* ]]; then
-    ok "3-phys HT ON -> 1-2,4-5"
-else
-    bad "Case 6 3p HT" "rc=$RC cl=[$cl]"
-fi
-
-# ==============================================================================
-# Case 7: 1 phys core / 2 vCPU HT ON (e.g. c7i.large) -> must refuse
-# ==============================================================================
-echo "=== Case 7: 1 phys core / 2 vCPU HT -> fail-closed ==="
-make_sysfs "$T/sys_1p_ht" 1 0:0-1 1:0-1
-make_grub "$T/grub_c7" 'GRUB_CMDLINE_LINUX_DEFAULT="quiet"'
-run_case c7 "$T/grub_c7" "$T/sys_1p_ht" "$T/no_pcore" "$T/grubd_empty" 1 2
-if [[ $RC -ne 0 ]]; then
-    ok "1-phys 2-vCPU HT refused (rc=$RC)"
-else
-    bad "Case 7 1p HT" "expected non-zero exit, got rc=0"
-fi
-
-# ==============================================================================
-# Case 8a & 8b: nosmt (adjacent odd CPUs offline -> 2,4,6) vs partial offline (smt=1 -> refuse)
-# ==============================================================================
-echo "=== Case 8a/8b: nosmt vs partial offline ==="
-make_sysfs "$T/sys_nosmt" 0 \
-    0:0 1:1:online0 2:2 3:3:online0 4:4 5:5:online0 6:6 7:7:online0 8:8 9:9:online0
-make_grub "$T/grub_c8a" 'GRUB_CMDLINE_LINUX_DEFAULT="quiet"'
-run_case c8a "$T/grub_c8a" "$T/sys_nosmt" "$T/no_pcore" "$T/grubd_empty" 0 10
-cl=$(get_default_cmdline "$T/grub_c8a")
-if [[ $RC -eq 0 && "$cl" == *"isolcpus=2,4,6"* ]] && grep -qi "nosmt" "$OUT_FILE"; then
-    ok "nosmt adjacent topology -> 2,4,6 + re-run warning"
-else
-    bad "Case 8a nosmt" "rc=$RC cl=[$cl] out=[$(tail -n 5 "$OUT_FILE")]"
-fi
-
-make_sysfs "$T/sys_part_off" 1 0:0-1 1:0-1 2:2-3 3:2-3:online0 4:4-5 5:4-5 6:6-7 7:6-7
-make_grub "$T/grub_c8b" 'GRUB_CMDLINE_LINUX_DEFAULT="quiet"'
-run_case c8b "$T/grub_c8b" "$T/sys_part_off" "$T/no_pcore" "$T/grubd_empty" 0 8
-if [[ $RC -ne 0 ]]; then
-    ok "partial offline while smt=1 refused (rc=$RC)"
-else
-    bad "Case 8b partial offline" "expected non-zero exit, got rc=0"
-fi
-
-# ==============================================================================
-# Case 9: missing or malformed thread_siblings_list -> fail-closed
-# ==============================================================================
-echo "=== Case 9: missing / malformed thread_siblings_list ==="
-make_sysfs "$T/sys_miss" 1 0:__MISSING__ 1:0-1 2:2-3 3:2-3
-make_grub "$T/grub_c9a" 'GRUB_CMDLINE_LINUX_DEFAULT="quiet"'
-run_case c9a "$T/grub_c9a" "$T/sys_miss" "$T/no_pcore" "$T/grubd_empty" 0 4
-rc_miss=$RC
-
-make_sysfs "$T/sys_bad1" 1 0:0-1 1:a-b 2:2-3 3:2-3
-make_grub "$T/grub_c9b" 'GRUB_CMDLINE_LINUX_DEFAULT="quiet"'
-run_case c9b "$T/grub_c9b" "$T/sys_bad1" "$T/no_pcore" "$T/grubd_empty" 0 4
-rc_bad1=$RC
-
-make_sysfs "$T/sys_bad2" 1 0:0-1 1:1-2-3 2:2-3 3:2-3
-make_grub "$T/grub_c9c" 'GRUB_CMDLINE_LINUX_DEFAULT="quiet"'
-run_case c9c "$T/grub_c9c" "$T/sys_bad2" "$T/no_pcore" "$T/grubd_empty" 0 4
-rc_bad2=$RC
-
-make_sysfs "$T/sys_bad3" 1 0:0-1 1:5-2 2:2-3 3:2-3
-make_grub "$T/grub_c9d" 'GRUB_CMDLINE_LINUX_DEFAULT="quiet"'
-run_case c9d "$T/grub_c9d" "$T/sys_bad3" "$T/no_pcore" "$T/grubd_empty" 0 4
-rc_bad3=$RC
-
-if [[ $rc_miss -ne 0 && $rc_bad1 -ne 0 && $rc_bad2 -ne 0 && $rc_bad3 -ne 0 ]]; then
-    ok "missing / a-b / 1-2-3 / 5-2 siblings_list all refused"
-else
-    bad "Case 9 malformed siblings" "rcs=$rc_miss,$rc_bad1,$rc_bad2,$rc_bad3"
-fi
-
-# ==============================================================================
-# Case 10: GRUB malformed quote / missing line / duplicate line -> fail-closed & untouched
-# ==============================================================================
-echo "=== Case 10: GRUB malformed / missing / duplicate DEFAULT ==="
-make_grub "$T/grub_c10a" "GRUB_CMDLINE_LINUX_DEFAULT='quiet'"
-cp "$T/grub_c10a" "$T/grub_c10a.orig"
-run_case c10a "$T/grub_c10a" "$T/sys_nuc" "$T/pcore_nuc" "$T/grubd_empty" 0 24
-rc_10a=$RC
-
-cat > "$T/grub_c10b" <<'EOF'
-GRUB_DEFAULT=0
-GRUB_CMDLINE_LINUX=""
-EOF
-cp "$T/grub_c10b" "$T/grub_c10b.orig"
-run_case c10b "$T/grub_c10b" "$T/sys_nuc" "$T/pcore_nuc" "$T/grubd_empty" 0 24
-rc_10b=$RC
-
-cat > "$T/grub_c10c" <<'EOF'
-GRUB_DEFAULT=0
+echo "=== Case 5: Post-99 grub.d/*.cfg override rejected ==="
+R="$(init_case_root c5 GenuineIntel)"
+make_sysfs "$R/sys/devices/system/cpu" 0 0:0 1:1 2:2 3:3
+cat > "$R/etc/default/grub.d/99-zz-override.cfg" <<'EOF'
 GRUB_CMDLINE_LINUX_DEFAULT="quiet"
-GRUB_CMDLINE_LINUX_DEFAULT="splash"
-GRUB_CMDLINE_LINUX=""
 EOF
-cp "$T/grub_c10c" "$T/grub_c10c.orig"
-run_case c10c "$T/grub_c10c" "$T/sys_nuc" "$T/pcore_nuc" "$T/grubd_empty" 0 24
-rc_10c=$RC
-
-if [[ $rc_10a -ne 0 && $rc_10b -ne 0 && $rc_10c -ne 0 ]] \
-   && cmp -s "$T/grub_c10a" "$T/grub_c10a.orig" \
-   && cmp -s "$T/grub_c10b" "$T/grub_c10b.orig" \
-   && cmp -s "$T/grub_c10c" "$T/grub_c10c.orig"; then
-    ok "single-quote / missing / duplicate DEFAULT refused without modifying file"
+run_case c5 "$R" 0 "$R/no_pcore"
+if [[ $RC -ne 0 ]] && grep -q "99-zz-override.cfg" "$OUT_FILE"; then
+    ok "Later override 99-zz-override.cfg rejected fail-closed"
 else
-    bad "Case 10 GRUB format" "rcs=$rc_10a,$rc_10b,$rc_10c"
+    bad "Case 5 post-99 override" "rc=$RC out=[$(tail -n 5 "$OUT_FILE")]"
 fi
 
 # ==============================================================================
-# Case 11: grub.d/*.cfg override detection -> fail-closed
+# Case 6: saved_entry, next_entry, submenu (>), recovery, dynamic default
 # ==============================================================================
-echo "=== Case 11: grub.d/*.cfg override detection ==="
-mkdir -p "$T/grubd_override"
-cat > "$T/grubd_override/50-cloudimg-settings.cfg" <<'EOF'
-GRUB_CMDLINE_LINUX_DEFAULT="console=tty1 console=ttyS0"
-EOF
-make_grub "$T/grub_c11" 'GRUB_CMDLINE_LINUX_DEFAULT="quiet"'
-run_case c11 "$T/grub_c11" "$T/sys_aws4_ht" "$T/no_pcore" "$T/grubd_override" 1 8
-if [[ $RC -ne 0 ]] && grep -q "50-cloudimg-settings.cfg" "$OUT_FILE"; then
-    ok "grub.d override detected and refused with filename"
+echo "=== Case 6: saved_entry / next_entry / submenu / recovery / dynamic default ==="
+# 6a: valid saved_entry=gnulinux-simple-ubuntu -> PASS
+R="$(init_case_root c6a GenuineIntel)"
+make_sysfs "$R/sys/devices/system/cpu" 0 0:0 1:1 2:2 3:3
+echo "saved_entry=gnulinux-simple-ubuntu" > "$R/boot/grub/grubenv"
+FAKE_GRUB_DEFAULT_STMT='set default="${saved_entry}"' run_case c6a "$R" 0 "$R/no_pcore"
+rc_6a=$RC
+
+# 6b: next_entry pointing into submenu (contains '>') -> FAIL + rollback
+R="$(init_case_root c6b GenuineIntel)"
+make_sysfs "$R/sys/devices/system/cpu" 0 0:0 1:1 2:2 3:3
+echo "next_entry=gnulinux-advanced-ubuntu>gnulinux-6.8.0-advanced" > "$R/boot/grub/grubenv"
+echo "# orig grub.cfg" > "$R/boot/grub/grub.cfg"
+cp "$R/boot/grub/grub.cfg" "$R/grub.cfg.orig"
+run_case c6b "$R" 0 "$R/no_pcore"
+rc_6b=$RC
+rb_6b=0
+[[ ! -e "$R/etc/default/grub.d/99-hft-isolation.cfg" ]] && cmp -s "$R/boot/grub/grub.cfg" "$R/grub.cfg.orig" && rb_6b=1
+
+# 6c: next_entry pointing to recovery entry -> FAIL
+R="$(init_case_root c6c GenuineIntel)"
+make_sysfs "$R/sys/devices/system/cpu" 0 0:0 1:1 2:2 3:3
+echo "next_entry=gnulinux-recovery-ubuntu" > "$R/boot/grub/grubenv"
+run_case c6c "$R" 0 "$R/no_pcore"
+rc_6c=$RC
+
+# 6d: dynamic default expression -> FAIL
+R="$(init_case_root c6d GenuineIntel)"
+make_sysfs "$R/sys/devices/system/cpu" 0 0:0 1:1 2:2 3:3
+FAKE_GRUB_DEFAULT_STMT='set default="${custom_dynamic_var}"' run_case c6d "$R" 0 "$R/no_pcore"
+rc_6d=$RC
+
+if [[ $rc_6a -eq 0 && $rc_6b -ne 0 && $rb_6b -eq 1 && $rc_6c -ne 0 && $rc_6d -ne 0 ]]; then
+    ok "saved_entry passes; submenu (>), recovery, and dynamic default fail-closed with 3-state rollback"
 else
-    bad "Case 11 grub.d override" "rc=$RC out=[$(tail -n 5 "$OUT_FILE")]"
+    bad "Case 6 grubenv/submenu" "6a=$rc_6a 6b=$rc_6b(rb=$rb_6b) 6c=$rc_6c 6d=$rc_6d"
 fi
 
 # ==============================================================================
-# Case 12: Real write + .bak + GRUB_CMDLINE_LINUX cleanup + 2nd run idempotent + --dry-run
+# Case 7: 3-state rollback on update-grub / grub-script-check failure
 # ==============================================================================
-echo "=== Case 12: Real write, .bak, conflict cleanup, idempotency, --dry-run ==="
-make_grub "$T/grub_c12" 'GRUB_CMDLINE_LINUX_DEFAULT="quiet"' 'GRUB_CMDLINE_LINUX="isolcpus=1-2 foo=bar"'
-cp "$T/grub_c12" "$T/grub_c12.orig"
-# First --dry-run must NOT modify file or invoke sudo
-run_case c12_dry "$T/grub_c12" "$T/sys_nuc" "$T/pcore_nuc" "$T/grubd_empty" 0 24 --dry-run
-rc_dry=$RC
-dry_untouched=0
-cmp -s "$T/grub_c12" "$T/grub_c12.orig" && [[ ! -s "$T/sudo.log" ]] && dry_untouched=1
+echo "=== Case 7: 3-state rollback on update-grub & grub-script-check failure ==="
+R="$(init_case_root c7 GenuineIntel)"
+make_sysfs "$R/sys/devices/system/cpu" 0 0:0 1:1 2:2 3:3
+echo "# previous dropin" > "$R/etc/default/grub.d/99-hft-isolation.cfg"
+echo "# previous grub.cfg" > "$R/boot/grub/grub.cfg"
+cp "$R/etc/default/grub" "$R/g.orig"
+cp "$R/etc/default/grub.d/99-hft-isolation.cfg" "$R/d.orig"
+cp "$R/boot/grub/grub.cfg" "$R/c.orig"
 
-# Real write
-run_case c12_w1 "$T/grub_c12" "$T/sys_nuc" "$T/pcore_nuc" "$T/grubd_empty" 0 24
-rc_w1=$RC
-bak_ok=0
-cmp -s "$T/grub_c12.bak" "$T/grub_c12.orig" && bak_ok=1
-linux_cleaned=0
-grep -q '^GRUB_CMDLINE_LINUX="foo=bar"$' "$T/grub_c12" && linux_cleaned=1
-cp "$T/grub_c12" "$T/grub_c12.after1"
+FAKE_GRUB_SCRIPT_CHECK_FAIL=1 run_case c7 "$R" 0 "$R/no_pcore"
+if [[ $RC -ne 0 ]] \
+   && cmp -s "$R/etc/default/grub" "$R/g.orig" \
+   && cmp -s "$R/etc/default/grub.d/99-hft-isolation.cfg" "$R/d.orig" \
+   && cmp -s "$R/boot/grub/grub.cfg" "$R/c.orig"; then
+    ok "3-state originals (grub, 99-hft-isolation.cfg, grub.cfg) fully restored on verification failure"
+else
+    bad "Case 7 3-state rollback" "rc=$RC"
+fi
 
-# 2nd run must be idempotent and NOT invoke sudo or update-grub
-run_case c12_w2 "$T/grub_c12" "$T/sys_nuc" "$T/pcore_nuc" "$T/grubd_empty" 0 24
-rc_w2=$RC
+# ==============================================================================
+# Case 8: --dry-run, idempotency, and verify_03 --live boot_id reboot gate
+# ==============================================================================
+echo "=== Case 8: --dry-run, idempotency, and verify_03 --live boot_id gate ==="
+R="$(init_case_root c8 GenuineIntel boot-id-AAAA)"
+make_sysfs "$R/sys/devices/system/cpu" 0 0:0 1:1 2:2 3:3
+
+# Dry-run writes nothing, no sudo
+run_case c8_dry "$R" 0 "$R/no_pcore" --dry-run
+dry_ok=0
+[[ $RC -eq 0 && ! -e "$R/etc/default/grub.d/99-hft-isolation.cfg" && ! -s "$T/sudo.log" ]] && dry_ok=1
+
+# Real apply
+run_case c8_apply "$R" 0 "$R/no_pcore"
+apply_ok=0
+[[ $RC -eq 0 && -f "$R/var/lib/hft-bootstrap/grub_staged.state" ]] && apply_ok=1
+
+# 2nd run idempotent (no update-grub)
+run_case c8_idem "$R" 0 "$R/no_pcore"
 idem_ok=0
-cmp -s "$T/grub_c12" "$T/grub_c12.after1" && [[ ! -s "$T/sudo.log" ]] && [[ ! -s "$T/update_grub.log" ]] && grep -q "No changes needed" "$OUT_FILE" && idem_ok=1
+[[ $RC -eq 0 && ! -s "$T/update_grub.log" ]] && grep -q "No changes needed" "$OUT_FILE" && idem_ok=1
 
-if [[ $rc_dry -eq 0 && $dry_untouched -eq 1 && $rc_w1 -eq 0 && $bak_ok -eq 1 && $linux_cleaned -eq 1 && $rc_w2 -eq 0 && $idem_ok -eq 1 ]]; then
-    ok "--dry-run clean, real write + .bak + GRUB_CMDLINE_LINUX cleanup + 2nd run idempotent"
-else
-    bad "Case 12 write/idempotency" "dry=$rc_dry/$dry_untouched w1=$rc_w1 bak=$bak_ok clean=$linux_cleaned w2=$rc_w2 idem=$idem_ok"
-fi
+# Prepare live /proc/cmdline & sysfs isolated BEFORE changing boot_id -> MUST FAIL reboot gate
+echo "BOOT_IMAGE=/boot/vmlinuz isolcpus=domain,managed_irq,1-3 nohz_full=1-3 rcu_nocbs=1-3 irqaffinity=0" > "$R/proc/cmdline"
+echo "1-3" > "$R/sys/devices/system/cpu/isolated"
 
-# ==============================================================================
-# Case 13: update-grub failure -> auto-rollback $GRUB_FILE from .bak
-# ==============================================================================
-echo "=== Case 13: update-grub failure auto-rollback ==="
-make_grub "$T/grub_c13" 'GRUB_CMDLINE_LINUX_DEFAULT="quiet isolcpus=1-2"'
-cp "$T/grub_c13" "$T/grub_c13.orig"
-FAKE_UPDATE_GRUB_FAIL=1 run_case c13 "$T/grub_c13" "$T/sys_nuc" "$T/pcore_nuc" "$T/grubd_empty" 0 24
-if [[ $RC -ne 0 ]] && cmp -s "$T/grub_c13" "$T/grub_c13.orig"; then
-    ok "update-grub failure exited non-zero and restored original grub file"
+set +e
+HFT_ROOT="$R" HFT_STATE_DIR="$R/var/lib/hft-bootstrap" HFT_SKIP_OS_CHECK=1 \
+HFT_GRUB_SCRIPT_CHECK_CMD="$T/bin/grub-script-check" HFT_GRUB_EDITENV_CMD="$T/bin/grub-editenv" \
+    bash "$VERIFIER" --live > "$T/c8_live_before.out" 2>&1
+rc_before_reboot=$?
+
+# Simulate reboot by rotating boot_id
+echo "boot-id-BBBB" > "$R/proc/sys/kernel/random/boot_id"
+HFT_ROOT="$R" HFT_STATE_DIR="$R/var/lib/hft-bootstrap" HFT_SKIP_OS_CHECK=1 \
+HFT_GRUB_SCRIPT_CHECK_CMD="$T/bin/grub-script-check" HFT_GRUB_EDITENV_CMD="$T/bin/grub-editenv" \
+    bash "$VERIFIER" --live > "$T/c8_live_after.out" 2>&1
+rc_after_reboot=$?
+set -e
+
+if [[ $dry_ok -eq 1 && $apply_ok -eq 1 && $idem_ok -eq 1 && $rc_before_reboot -ne 0 && $rc_after_reboot -eq 0 ]]; then
+    ok "--dry-run clean, 2nd run idempotent, --live blocks pre-reboot and passes post-reboot"
 else
-    bad "Case 13 rollback" "rc=$RC cmp=$(cmp -s "$T/grub_c13" "$T/grub_c13.orig" && echo same || echo DIFF)"
+    bad "Case 8 gate/idem" "dry=$dry_ok apply=$apply_ok idem=$idem_ok pre_rb=$rc_before_reboot post_rb=$rc_after_reboot"
 fi
 
 echo ""
